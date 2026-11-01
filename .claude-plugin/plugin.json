@@ -1,0 +1,12 @@
+{
+  "name": "takepilot",
+  "version": "0.3.0",
+  "description": "Make product and ad videos (TikTok Shop, Reels, Shorts) with takepilot: your Claude plans the video, takepilot's remote MCP tools generate voice, images and clips, build and render it.",
+  "author": {
+    "name": "TakePilot",
+    "url": "https://takepilot.ai"
+  },
+  "homepage": "https://takepilot.ai",
+  "license": "UNLICENSED",
+  "keywords": ["video", "ads", "tiktok-shop", "mcp"]
+}
