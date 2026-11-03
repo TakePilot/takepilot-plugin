@@ -1,0 +1,1 @@
+Make product / ad videos (TikTok Shop, Reels, Shorts) and their variations with takepilot. Plan here, then call the takepilot connector for voice, images, clips, build and render.

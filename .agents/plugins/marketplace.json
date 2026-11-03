@@ -1,0 +1,20 @@
+{
+  "name": "takepilot",
+  "interface": {
+    "displayName": "takepilot"
+  },
+  "plugins": [
+    {
+      "name": "takepilot",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
