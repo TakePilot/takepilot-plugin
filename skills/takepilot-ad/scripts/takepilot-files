@@ -1,0 +1,293 @@
+#!/bin/sh
+# takepilot-files: the steps on the person's own computer, so the agent never writes curl, unzip or ffmpeg with a signed
+# URL on a command line (ENGR-2905, backend-api/17-takepilot-plugin/17-25-chat-for-marketers.md). Each command prints one
+# line of JSON and says problems in plain Japanese on stderr.
+#
+#   takepilot-files pc                          can this computer write the MP4? memory and free disk
+#   takepilot-files save <link> <name>          download a takepilot link to ./takepilot/<name>
+#   takepilot-files takeout <link> <name>       unpack a version's zip into a new ~/takepilot-videos/<name>[-2...]/
+#   takepilot-files render <name> [fps]         write ~/takepilot-videos/<name>/renders/takepilot.mp4 on this computer (fps 24|30|60, default 30)
+#   takepilot-files frames <mp4>                cut the first, middle and last frame next to it, in <mp4>.frames/
+#   takepilot-files sheet <mp4>                 one frame a second (60 evenly over a longer video), 360 px wide, in 3x3
+#                                               tiles next to it, in <mp4>.sheets/, for the agent to look at (ENGR-2996)
+#   takepilot-files pack <name>                 zip ~/takepilot-videos/<name>/ to send it back
+#   takepilot-files send <file> <put_link> <content_type>   upload a file to its put_link
+#   takepilot-files image <url> <name>          download one photo from a 商材's own page to ./takepilot/shozai/<name> (ENGR-2945)
+#
+# Exit codes: 0 done, 2 wrong use, 3 a link that is not takepilot's, 4 network or storage, 5 a tool is missing, 6 the render
+# failed. Links are takepilot's own (/v1/links/) and only those are opened; send never follows a symbolic link.
+set -u
+
+die() { code=$1; shift; printf '%s\n' "$*" >&2; exit "$code"; }
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || die 2 "スクリプトの場所が読めません。"
+videos="${HOME}/takepilot-videos"
+
+# json_str: a string as JSON (the helper needs no jq or python)
+json_str() { printf '"%s"' "$(printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"; }
+
+is_link() {
+  case "$1" in *[!A-Za-z0-9:/._-]*) return 1 ;; esac
+  if [ -n "${TAKEPILOT_LINK_BASE:-}" ]; then # tests and a local server only
+    case "$1" in "${TAKEPILOT_LINK_BASE}"/v1/links/?*) return 0 ;; esac
+  fi
+  case "$1" in https://*) ;; *) return 1 ;; esac
+  rest=${1#https://}
+  host=${rest%%/*} # only the host: a * in a pattern would also match / and let another host's path through
+  case "$host" in *.takepilot.ai) ;; *) return 1 ;; esac
+  case "/${rest#*/}" in /v1/links/?*) return 0 ;; esac
+  return 1
+}
+
+is_page_image() { # an https URL a page names, in plain URL characters only (no quote, $, backtick, space); no address of this network
+  case "$1" in *[!A-Za-z0-9:/._~%?\&=+,@-]*) return 1 ;; esac
+  case "$1" in https://?*) ;; *) return 1 ;; esac
+  rest=${1#https://}
+  host=${rest%%/*}
+  host=${host%%\?*}
+  case "$host" in *@*) return 1 ;; esac # no user:password@ to pose as another host
+  host=${host%%:*}
+  case "$host" in "" | localhost | *.localhost | *.local | *.internal | *.lan | *.home.arpa | *[!A-Za-z0-9.-]*) return 1 ;; esac
+  case "$host" in *.*) ;; *) return 1 ;; esac
+  case "${host##*.}" in "" | *[!A-Za-z]*) return 1 ;; esac # a name ending in letters: an IP address is no 商材 page
+  return 0
+}
+
+image_size() { # "<width> <height>" when this computer can read them, else nothing
+  if command -v sips >/dev/null 2>&1; then
+    sips -g pixelWidth -g pixelHeight "$1" 2>/dev/null | awk '/pixelWidth/ {w=$2} /pixelHeight/ {h=$2} END {if (w && h) print w, h}'
+  elif command -v identify >/dev/null 2>&1; then
+    identify -format '%w %h' "$1[0]" 2>/dev/null
+  fi
+}
+
+safe_name() { # one file name to save as: no separators, no leading dot or dash
+  case "$1" in "" | .* | -* | */* | *\\*) return 1 ;; esac
+  return 0
+}
+
+safe_folder() { # a video's folder under ~/takepilot-videos: letters, digits, _ and - only
+  case "$1" in "" | -* | _* | *[!A-Za-z0-9_-]*) return 1 ;; esac
+  [ "${#1}" -le 64 ]
+}
+
+free_path() { # the path itself, or with -2, -3... before the extension: a save never overwrites
+  case "$1" in *.*) stem=${1%.*} ext=.${1##*.} ;; *) stem=$1 ext= ;; esac
+  try=$1 n=2
+  while [ -e "$try" ] || [ -L "$try" ]; do try="$stem-$n$ext" n=$((n + 1)); done
+  printf '%s' "$try"
+}
+
+size_of() { wc -c <"$1" | tr -d ' '; }
+
+cmd=${1:-}
+[ $# -gt 0 ] && shift
+case "$cmd" in
+  pc)
+    case "$(uname -s)" in
+      Darwin) mem=$(sysctl -n hw.memsize 2>/dev/null) ;;
+      Linux) mem=$(awk '/MemTotal/ {printf "%.0f", $2 * 1024}' /proc/meminfo 2>/dev/null) ;;
+      *) mem=$(powershell.exe -NoProfile -Command '(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory' 2>/dev/null | tr -d '\r') ;;
+    esac
+    free_kb=$(df -k "$HOME" 2>/dev/null | awk 'NR==2 {print $4}')
+    mem_gb=$(( ${mem:-0} / 1073741824 ))
+    free_gb=$(( ${free_kb:-0} / 1048576 ))
+    ok=false
+    # 16 GB memory is a little under 16 x 2^30 on some machines: round to the nearest
+    [ $(( (${mem:-0} + 536870912) / 1073741824 )) -ge 16 ] && [ "$free_gb" -ge 10 ] && ok=true
+    printf '{"can_render_here":%s,"memory_gb":%s,"free_disk_gb":%s}\n' "$ok" "$mem_gb" "$free_gb"
+    ;;
+  save)
+    [ $# -eq 2 ] || die 2 "使い方: takepilot-files save <link> <name>"
+    is_link "$1" || die 3 "takepilot のリンクではないので開きません。"
+    safe_name "$2" || die 2 "保存する名前にフォルダを含められません。"
+    case "$2" in # media only: a download never becomes an agent's instruction file or a script
+      *.mp4 | *.mov | *.jpg | *.jpeg | *.png | *.webp | *.wav | *.mp3 | *.m4a | *.srt | *.zip) ;;
+      *) die 2 "動画、画像、音声、字幕、zip だけ保存します。" ;;
+    esac
+    [ ! -L takepilot ] || die 2 "./takepilot がシンボリックリンクなので保存しません。"
+    mkdir -p takepilot || die 4 "./takepilot を作れません。"
+    to=$(free_path "takepilot/$2")
+    curl -fsSL -o "$to" "$1" || die 4 "ダウンロードできませんでした。リンクは 24 時間で切れるので、取り直してください。"
+    printf '{"path":%s,"bytes":%s}\n' "$(json_str "$to")" "$(size_of "$to")"
+    ;;
+  image)
+    [ $# -eq 2 ] || die 2 "使い方: takepilot-files image <url> <name>"
+    is_page_image "$1" || die 3 "https の画像の URL だけを開きます。"
+    safe_name "$2" || die 2 "保存する名前にフォルダを含められません。"
+    case "$2" in *.jpg | *.jpeg | *.png | *.webp) ;; *) die 2 "画像（.jpg .jpeg .png .webp）だけ保存します。" ;; esac
+    [ ! -L takepilot ] && [ ! -L takepilot/shozai ] || die 2 "保存先がシンボリックリンクなので保存しません。"
+    mkdir -p takepilot/shozai || die 4 "./takepilot/shozai を作れません。"
+    to=$(free_path "takepilot/shozai/$2")
+    # https only; every redirect's target passes the same check before it is opened (at most 5); at most 20 MB
+    url=$1 hops=0
+    while :; do
+      got=$(curl -sS --proto '=https' --max-redirs 0 --max-time 60 --max-filesize 20000000 -o "$to" -w '%{http_code} %{redirect_url}' "$url") ||
+        { rm -f "$to"; die 4 "画像を落とせませんでした（ページが自動の取得を断っているかもしれません）。"; }
+      code=${got%% *} next=${got#* }
+      case "$code" in
+        2??) break ;;
+        30[12378])
+          hops=$((hops + 1))
+          [ "$hops" -le 5 ] && is_page_image "$next" || { rm -f "$to"; die 3 "転送の先が https の画像の URL ではないので開きません。"; }
+          url=$next
+          ;;
+        *) rm -f "$to"; die 4 "画像を落とせませんでした（ページが自動の取得を断っているかもしれません）。" ;;
+      esac
+    done
+    [ "$(size_of "$to")" -le 20000000 ] || { rm -f "$to"; die 4 "20 MB を超える画像は使いません。"; }
+    # the bytes must be a photo, whatever the URL said: PNG, JPEG or WebP
+    magic=$(head -c 12 "$to" | od -An -tx1 | tr -d ' \n')
+    case "$magic" in
+      89504e470d0a1a0a* | ffd8ff* | 52494646????????57454250*) ;;
+      *) rm -f "$to"; die 4 "落としたものが画像ではありませんでした。" ;;
+    esac
+    size=$(image_size "$to")
+    if [ -n "$size" ]; then
+      set -- $size
+      printf '{"path":%s,"bytes":%s,"width":%s,"height":%s}\n' "$(json_str "$to")" "$(size_of "$to")" "$1" "$2"
+    else
+      printf '{"path":%s,"bytes":%s}\n' "$(json_str "$to")" "$(size_of "$to")"
+    fi
+    ;;
+  takeout)
+    [ $# -eq 2 ] || die 2 "使い方: takepilot-files takeout <link> <name>"
+    is_link "$1" || die 3 "takepilot のリンクではないので開きません。"
+    safe_folder "$2" || die 2 "フォルダの名前は英数字と - _ だけにしてください。"
+    command -v unzip >/dev/null 2>&1 || die 5 "unzip がこの PC にありません。"
+    [ ! -L "$videos" ] || die 2 "~/takepilot-videos がシンボリックリンクなので使いません。"
+    # everything happens in a fresh folder of our own first, removed on every way out (ENGR-2927); the video's folder is made
+    # only after the whole zip passed, and removed again if moving the files in fails
+    work=$(mktemp -d "${TMPDIR:-/tmp}/takepilot-takeout.XXXXXX") || die 4 "作業用のフォルダを作れません。"
+    dest= kept=
+    trap 'rm -rf "$work"; [ -n "$dest" ] && [ -z "$kept" ] && rm -rf "$dest"' EXIT
+    trap 'exit 130' HUP INT TERM
+    curl -fsSL -o "$work/v.zip" "$1" || die 4 "ダウンロードできませんでした。もう一度取り出してください。"
+    # a zip unzip warns about (data before it, a damaged one) is not a bundle we made: refused whole
+    unzip -Z1 "$work/v.zip" >"$work/list" 2>/dev/null || die 4 "zip を開けませんでした。"
+    # no way out of the folder and nothing hidden: .git, .vscode, .claude and every other dot name are refused, not dropped
+    if grep -qE '(^|/)\.|(^|/)\.\.(/|$)|^/|\\' "$work/list"; then die 4 "動画のバンドルにないファイル（. で始まる名前など）を含む zip は開きません。"; fi
+    mkdir "$work/x" || die 4 "作業用のフォルダを作れません。"
+    unzip -qn "$work/v.zip" -d "$work/x" >/dev/null 2>&1 || die 4 "zip を開けませんでした。"
+    [ -z "$(find "$work/x" ! -type f ! -type d -print | head -n 1)" ] || die 4 "シンボリックリンクなどを含む zip は開きません。"
+    # a folder already there may hold hand edits not sent back yet: never unpack over it
+    name=$2 n=2
+    while [ -e "$videos/$name" ] || [ -L "$videos/$name" ]; do name="$2-$n" n=$((n + 1)); done
+    mkdir -p "$videos" && mkdir "$videos/$name" || die 4 "フォルダを作れません。"
+    dest="$videos/$name"
+    # only the kinds of file a bundle holds move in (video_bundle.go): the page and our json at the top, media, fonts, scripts and
+    # styles under assets/ and compositions/. Anything else stays behind and goes with the work folder
+    (cd "$work/x" && find . -type f -print) | while IFS= read -r f; do
+      rel=${f#./}
+      case "$rel" in
+        index.html | hyperframes.json | meta.json | takepilot.json | README.txt) ;;
+        assets/*.* | compositions/*.*)
+          case "$(printf '%s' "${rel##*.}" | tr 'A-Z' 'a-z')" in
+            png | jpg | jpeg | webp | gif | avif | svg | mp4 | mov | webm | m4v | wav | mp3 | m4a | aac | ogg | oga | opus | weba | flac | woff | woff2 | ttf | otf | js | css | html | json) ;;
+            *) continue ;;
+          esac
+          ;;
+        *) continue ;;
+      esac
+      mkdir -p "$dest/$(dirname -- "$rel")" && cp -- "$work/x/$rel" "$dest/$rel" || exit 1
+    done || die 4 "取り出したファイルを置けませんでした。"
+    [ -f "$dest/index.html" ] || die 4 "動画のバンドルではありません（index.html がありません）。"
+    kept=1
+    printf '{"name":%s,"folder":%s}\n' "$(json_str "$name")" "$(json_str "$dest")"
+    ;;
+  render)
+    [ $# -eq 1 ] || [ $# -eq 2 ] || die 2 "使い方: takepilot-files render <name> [24|30|60]"
+    safe_folder "$1" || die 2 "フォルダの名前は英数字と - _ だけにしてください。"
+    fps="${2:-30}" # the clips' rate, the same as get_video_bundle's fps (the ticket takes only an mp4 at it)
+    case "$fps" in 24 | 30 | 60) ;; *) die 2 "fps は 24・30・60 のどれかにしてください。" ;; esac
+    dest="$videos/$1"
+    [ -d "$dest" ] && [ ! -L "$dest" ] || die 2 "取り出した動画がありません。先に取り出してください。"
+    command -v node >/dev/null 2>&1 || die 5 "この PC に Node.js 22 以上がありません。"
+    command -v ffmpeg >/dev/null 2>&1 || die 5 "この PC に ffmpeg がありません。"
+    node "$here/hyperframes.mjs" browser ensure >/dev/null 2>&1 || die 6 "書き出しの準備ができませんでした。"
+    mkdir -p "$dest/renders"
+    out="$dest/renders/takepilot.mp4"
+    log="$dest/renders/.render.log"
+    if ! node "$here/hyperframes.mjs" render "$dest" --fps "$fps" --quality standard --format mp4 --output "$out" >"$log" 2>&1; then
+      tail -n 5 "$log" >&2
+      die 6 "この PC での書き出しに失敗しました。"
+    fi
+    rm -f "$log"
+    printf '{"path":%s,"bytes":%s}\n' "$(json_str "$out")" "$(size_of "$out")"
+    ;;
+  frames)
+    [ $# -eq 1 ] || die 2 "使い方: takepilot-files frames <mp4>"
+    case "$1" in *.mp4) ;; *) die 2 "MP4 だけ読みます。" ;; esac
+    [ -f "$1" ] && [ ! -L "$1" ] || die 2 "動画のファイルがありません。"
+    case "$1" in /*) in=$1 ;; *) in=$(pwd)/$1 ;; esac
+    command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1 || die 5 "この PC に ffmpeg がありません。"
+    # the container is named and only local files open: a file posing as an mp4 can never pull anything from the network
+    secs=$(ffprobe -v error -f mov -protocol_whitelist file -show_entries format=duration -of csv=p=0 "$in") || die 4 "動画を読めませんでした。"
+    dir="$in.frames"
+    [ ! -L "$dir" ] || die 2 "コマの置き場がシンボリックリンクなので使いません。"
+    mkdir -p "$dir" || die 4 "フォルダを作れません。"
+    mid=$(awk -v s="$secs" 'BEGIN {printf "%.2f", s / 2}')
+    last=$(awk -v s="$secs" 'BEGIN {v = s - 1; if (v < 0) v = 0; printf "%.2f", v}')
+    for t in 0.50 "$mid" "$last"; do
+      rm -f "$dir/$t.jpg" # a link there is removed, never written through
+      ffmpeg -v error -y -ss "$t" -f mov -protocol_whitelist file -i "$in" -frames:v 1 "$dir/$t.jpg" </dev/null || die 4 "コマを切り出せませんでした。"
+    done
+    printf '{"folder":%s,"seconds":%s}\n' "$(json_str "$dir")" "$secs"
+    ;;
+  sheet)
+    # a reference or collected video, seen by the agent itself (17-35): one frame a second, at most 60, nine to a jpg
+    [ $# -eq 1 ] || die 2 "使い方: takepilot-files sheet <mp4>"
+    case "$1" in *.mp4) ;; *) die 2 "MP4 だけ読みます。" ;; esac
+    [ -f "$1" ] && [ ! -L "$1" ] || die 2 "動画のファイルがありません。"
+    case "$1" in /*) in=$1 ;; *) in=$(pwd)/$1 ;; esac
+    command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1 || die 5 "この PC に ffmpeg がありません。"
+    # the same guard as frames: the container is named and only local files open
+    secs=$(ffprobe -v error -f mov -protocol_whitelist file -show_entries format=duration -of csv=p=0 "$in") || die 4 "動画を読めませんでした。"
+    case "$secs" in '' | *[!0-9.]*) die 4 "動画の長さを読めませんでした。" ;; esac
+    dir="$in.sheets"
+    [ ! -L "$dir" ] || die 2 "タイルの置き場がシンボリックリンクなので使いません。"
+    mkdir -p "$dir" || die 4 "フォルダを作れません。"
+    rm -f "$dir"/sheet-*.jpg # an old sheet or a link there is removed, never written through
+    # up to 60 s: 1 frame a second; longer: 60 frames spread evenly. step = the seconds between two frames
+    set -- $(awk -v s="$secs" 'BEGIN { if (s <= 60) { n = int(s + 0.5); if (n < 1) n = 1; f = 1 } else { n = 60; f = 60 / s }
+      printf "%d %.6f %.6f\n", n, f, 1 / f }')
+    count=$1 rate=$2 step=$3
+    ffmpeg -v error -y -f mov -protocol_whitelist file -i "$in" -an \
+      -vf "fps=${rate},scale=360:-2,tile=3x3" -frames:v $(((count + 8) / 9)) -q:v 4 "$dir/sheet-%02d.jpg" </dev/null ||
+      die 4 "タイルを作れませんでした。"
+    list= i=0
+    for f in "$dir"/sheet-*.jpg; do
+      [ -f "$f" ] || continue
+      from=$(awk -v i="$i" -v t="$step" 'BEGIN {printf "%.1f", i * 9 * t}')
+      to=$(awk -v i="$i" -v t="$step" -v n="$count" 'BEGIN {k = i * 9 + 8; if (k > n - 1) k = n - 1; printf "%.1f", k * t}')
+      list="$list${list:+,}{\"path\":$(json_str "$f"),\"from\":$from,\"to\":$to}"
+      i=$((i + 1))
+    done
+    [ -n "$list" ] || die 4 "タイルを作れませんでした。"
+    printf '{"sheets":[%s],"seconds":%s}\n' "$list" "$(awk -v s="$secs" 'BEGIN {printf "%.1f", s}')"
+    ;;
+  pack)
+    [ $# -eq 1 ] || die 2 "使い方: takepilot-files pack <name>"
+    safe_folder "$1" || die 2 "フォルダの名前は英数字と - _ だけにしてください。"
+    [ -d "$videos/$1" ] && [ ! -L "$videos/$1" ] || die 2 "取り出した動画がありません。"
+    command -v zip >/dev/null 2>&1 || die 5 "zip がこの PC にありません。"
+    out="$videos/$1.zip"
+    rm -f "$out"
+    (cd "$videos/$1" && zip -qry "$out" . -x '.hyperframes/*' '.thumbnails/*' '.waveform-cache/*' 'renders/*') || die 4 "zip を作れませんでした。"
+    printf '{"path":%s,"bytes":%s}\n' "$(json_str "$out")" "$(size_of "$out")"
+    ;;
+  send)
+    [ $# -eq 3 ] || die 2 "使い方: takepilot-files send <file> <put_link> <content_type>"
+    [ -f "$1" ] || die 2 "送るファイルがありません。"
+    [ ! -L "$1" ] || die 2 "シンボリックリンクは送りません。"
+    case "$3" in *[!a-z0-9/.+-]*) die 2 "ファイルの種類の書き方が正しくありません。" ;; esac
+    is_link "$2" || die 3 "takepilot のリンクではないので送りません。"
+    # the link answers where to PUT: the file goes straight to storage, and the signed URL stays inside this process
+    to=$(curl -fsS -o /dev/null -w '%{redirect_url}' "$2") || die 4 "送り先を取れませんでした。リンクの期限が切れたかもしれません。"
+    [ -n "$to" ] || die 4 "送り先を取れませんでした。"
+    curl -fsS -o /dev/null -T "$1" -H "Content-Type: $3" "$to" || die 4 "送れませんでした。もう一度試してください。"
+    printf '{"sent":%s,"bytes":%s}\n' "$(json_str "$1")" "$(size_of "$1")"
+    ;;
+  *)
+    die 2 "使い方: takepilot-files pc | save | image | takeout | render | frames | sheet | pack | send"
+    ;;
+esac

@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# fetch-reference: download a video the person pasted or the agent found on an ad library page, on the person's own
+# machine, so the agent can upload it to takepilot (request_file_upload -> PUT -> import_reference{upload_id}) and
+# analyse it itself (takepilot-files sheet, transcribe_captions; ENGR-2996). takepilot never downloads these on its
+# servers (Peter 2026-11-05, ENGR-2862; backend-api/17-takepilot-plugin/17-17-reference-videos.md, 17-35). The same
+# steps by hand, for every OS: get_playbook{section: "references"}.
+#
+#   fetch-reference <url>                     probe, then download if it is 180 s or shorter
+#   fetch-reference <url> --section 0:10-1:40 download only that part (needs ffmpeg)
+#
+# Sites: YouTube, TikTok (ads.tiktok.com's Creative Center too), Instagram, Facebook (the Meta ad library), and the
+# video hosts those pages and Google's Ads Transparency Center play from: fbcdn.net, tiktokcdn.com, tiktokcdn-us.com,
+# googlesyndication.com, googlevideo.com (their subdomains). Uses yt-dlp at a pinned version through uv (`uvx`, cached
+# by uv; nothing goes into the system Python). No cookies, no login, no browser profile: a private, age-gated,
+# members-only or DRM video fails, and that is the answer.
+# Prints one JSON line on stdout. Exit codes: 0 downloaded ({"path", "dir", "seconds", "bytes"}), 2 bad arguments or
+# not one of the sites above, 3 uv missing (ask the person to install it), 4 longer than 180 s and no --section
+# ({"seconds"}: ask the person which part to keep), 5 the download failed or the length is unknown (a live stream;
+# {"error"}), 6 the file is over 200 MB or still over 180 s.
+# Delete the folder ("dir") once the video is analysed (or right away when import_reference failed).
+set -euo pipefail
+
+YTDLP_VERSION="2026.10.26"
+MAX_SECONDS=180
+MAX_BYTES=$((200 * 1024 * 1024))
+
+out() { printf '%s\n' "$1"; }
+fail() { # code, json
+  out "$2"
+  exit "$1"
+}
+jstr() { # a JSON string of $1
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/ }
+  s=${s//$'\r'/ }
+  s=${s//$'\t'/ }
+  printf '"%s"' "$s"
+}
+
+url="" section=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --section) section=${2:-}; shift 2 || fail 2 '{"error":"--section needs START-END, e.g. 0:10-1:40"}' ;;
+    -h | --help) sed -n '2,21p' "$0"; exit 0 ;;
+    -*) fail 2 "{\"error\":$(jstr "unknown option $1")}" ;;
+    *) [ -z "$url" ] || fail 2 '{"error":"give one URL"}'; url=$1; shift ;;
+  esac
+done
+[ -n "$url" ] || fail 2 '{"error":"usage: fetch-reference <url> [--section START-END]"}'
+
+# Only these sites (their short links included) and the video hosts their ad libraries play from (ENGR-2996): Meta's
+# ad library (facebook.com, videos on fbcdn.net), TikTok's (videos on tiktokcdn.com / tiktokcdn-us.com) and Google's
+# Ads Transparency Center (videos on googlesyndication.com / googlevideo.com; most of them are on YouTube). Anything
+# else: ask the person for the file. The authority (up to the first / ? #) may carry no user info:
+# "https://youtube.com:x@evil.example/" is evil.example.
+host=$(printf '%s' "$url" | sed -nE 's#^[Hh][Tt][Tt][Pp][Ss]?://([^/?#@:]+)(:[0-9]+)?([/?#].*)?$#\1#p' | tr 'A-Z' 'a-z')
+case "$host" in
+  youtube.com | *.youtube.com | youtu.be | tiktok.com | *.tiktok.com | instagram.com | *.instagram.com) ;;
+  facebook.com | *.facebook.com | *.fbcdn.net | *.tiktokcdn.com | *.tiktokcdn-us.com) ;;
+  *.googlesyndication.com | *.googlevideo.com) ;;
+  *) fail 2 "{\"error\":$(jstr "not a YouTube, TikTok, Instagram or Facebook URL, nor an ad library's video host: ask the person for the video file instead")}" ;;
+esac
+if [ -n "$section" ] && ! printf '%s' "$section" | grep -Eq '^[0-9:.]+-[0-9:.]+$'; then
+  fail 2 '{"error":"--section is START-END in seconds or m:ss, e.g. 0:10-1:40"}'
+fi
+
+command -v uvx >/dev/null 2>&1 || fail 3 "{\"error\":$(jstr "uv is not installed. Ask the person before installing it: macOS 'brew install uv', macOS / Linux 'curl -LsSf https://astral.sh/uv/install.sh | sh', Windows 'winget install --id=astral-sh.uv -e'. Then run this again.")}"
+
+# YouTube needs a JavaScript runtime for its player (yt-dlp's EJS); yt-dlp turns on only deno by itself.
+js=()
+for r in deno node bun; do
+  if command -v "$r" >/dev/null 2>&1; then js=(--js-runtimes "$r"); break; fi
+done
+ytdlp() {
+  uvx --quiet --from "yt-dlp[default]==${YTDLP_VERSION}" yt-dlp --ignore-config --no-playlist --playlist-items 1 \
+    --no-cookies --no-cookies-from-browser --match-filter "!is_live" ${js[@]+"${js[@]}"} "$@" # bash 3.2: an empty array under set -u
+}
+
+err=$(mktemp)
+trap 'rm -f "$err"' EXIT
+if ! seconds=$(ytdlp --skip-download --print duration -- "$url" 2>"$err" | head -n 1); then
+  fail 5 "{\"error\":$(jstr "could not read the video (private, removed, login-only, region-locked, or the site refused): $(grep -E 'ERROR' "$err" | tail -n 1)")}"
+fi
+seconds=${seconds%%.*}
+case "$seconds" in '' | NA | *[!0-9]*) seconds=0 ;; esac
+if [ "$seconds" -le 0 ]; then # a live stream, a premiere not started, or no length: never download open-ended
+  fail 5 "{\"error\":$(jstr "the video's length is unknown (a live stream or a premiere?): ask the person for the file")}"
+fi
+
+have_ffmpeg=0
+command -v ffmpeg >/dev/null 2>&1 && have_ffmpeg=1
+if [ -z "$section" ] && [ "$seconds" -gt "$MAX_SECONDS" ]; then
+  fail 4 "{\"seconds\":$seconds,\"error\":$(jstr "the video is ${seconds} s; takepilot takes up to ${MAX_SECONDS} s. Ask the person which part to keep and run again with --section START-END")}"
+fi
+if [ -n "$section" ] && [ "$have_ffmpeg" = 0 ]; then
+  fail 2 "{\"error\":$(jstr "--section needs ffmpeg (macOS 'brew install ffmpeg', Windows 'winget install --id=Gyan.FFmpeg -e', Linux the distribution's ffmpeg). Ask the person before installing it, or ask for a shorter file")}"
+fi
+
+tmp=${TMPDIR:-/tmp}
+dir=$(mktemp -d "${tmp%/}/takepilot-ref.XXXXXX")
+args=(--max-filesize 200M -o "$dir/ref.%(ext)s")
+if [ "$have_ffmpeg" = 1 ]; then # best video up to 1080p plus its audio, merged into one mp4
+  args+=(-f "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[height<=1080][ext=mp4]/bv*[height<=1080]+ba/b[height<=1080]"
+    --merge-output-format mp4 --remux-video mp4) # always an mp4 container (takepilot refuses a file without ftyp)
+else # no ffmpeg: one file that already has both (lower quality on YouTube)
+  args+=(-f "b[height<=1080][ext=mp4]/b[ext=mp4]")
+fi
+[ -z "$section" ] || args+=(--download-sections "*${section}" --force-keyframes-at-cuts) # cut exactly, not at the keyframe before
+if ! ytdlp "${args[@]}" -- "$url" >/dev/null 2>"$err"; then
+  rm -rf "$dir"
+  fail 5 "{\"error\":$(jstr "the download failed: $(grep -E 'ERROR' "$err" | tail -n 1)")}"
+fi
+file=$(find "$dir" -maxdepth 1 -type f -name 'ref.*' ! -name '*.part' | head -n 1)
+if [ -z "$file" ]; then
+  rm -rf "$dir"
+  fail 5 '{"error":"the download made no file (over 200 MB, or no mp4 format)"}'
+fi
+bytes=$(wc -c <"$file" | tr -d ' ')
+if [ "$bytes" -gt "$MAX_BYTES" ]; then
+  rm -rf "$dir"
+  fail 6 "{\"bytes\":$bytes,\"error\":$(jstr "over 200 MB: ask the person for a shorter part (--section)")}"
+fi
+if command -v ffprobe >/dev/null 2>&1; then
+  d=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$file" 2>/dev/null || true)
+  d=${d%%.*}
+  case "$d" in '' | *[!0-9]*) ;; *) seconds=$d ;; esac
+fi
+if [ "$seconds" -gt "$MAX_SECONDS" ]; then
+  rm -rf "$dir"
+  fail 6 "{\"seconds\":$seconds,\"error\":$(jstr "still over ${MAX_SECONDS} s: use a shorter --section")}"
+fi
+out "{\"path\":$(jstr "$file"),\"dir\":$(jstr "$dir"),\"seconds\":$seconds,\"bytes\":$bytes}"

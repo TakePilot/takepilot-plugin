@@ -36,11 +36,11 @@ codex mcp login takepilot
 
 ## 使う
 
-「化粧水の 30 秒の TikTok Shop 動画を takepilot で作って」のように頼みます。有料の道具を呼ぶ前に、見積もりを見せて確かめます。
+「化粧水の 30 秒の TikTok Shop 動画を takepilot で作って」のように頼みます。有料のツールを呼ぶ前に、見積もりを見せて確かめます。
 
 ## 注意
 
-- Codex の sandbox がネットワークを閉じていると、できた動画を手元に保存できません。そのときは 30 分有効のダウンロードの URL を出します。
+- Codex の sandbox がネットワークを閉じていると、できた動画を手元に保存できません。そのときは 24 時間有効のダウンロードのリンクを出します。
   動画は web のマイファイルにも残ります。
 - 共有の PC で使ったあとは `codex mcp logout takepilot` でトークンを消してください。
 - この zip の名前に `-dev` が付いているものは開発用のサーバー（`https://api-dev.takepilot.ai/v1/mcp`）に、`-stg` が付いているものはステージングのサーバー（`https://api-stg.takepilot.ai/v1/mcp`）につなぎます。

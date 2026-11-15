@@ -1,6 +1,6 @@
 ---
-description: Lower takepilot spend caps at once, or ask to raise them (the person confirms on the web)
-argument-hint: <e.g. "person 20" or "client 10">
+description: 使える額の上限を下げる（すぐ効く）、または上げる確かめのページを出す
+argument-hint: <e.g. "person 20", "client 10" or "per-call 5">
 allowed-tools: mcp__plugin_takepilot_takepilot__get_account
 ---
 
@@ -8,8 +8,10 @@ Change takepilot spend caps as asked: $ARGUMENTS
 
 Answer in the person's language: the language they write in; for a bare command with no words of theirs, Japanese (takepilot is for the Japanese market).
 
+Talking to the person, say あなたの 1 日 and このエージェントの 1 日 and 1 回, as a dollar amount (`$XX`); never クライアント.
 Caps (USD; defaults in brackets): `person_usd` (per person per day, all clients together) [USD 50], `client_usd` (this
-client per day) [USD 20]. A single paid call is always capped at USD 10 by `max_usd`. Days reset at 00:00 JST.
+client per day) [USD 20], `per_call_usd` (the ceiling of one paid call's `max_usd`; up to the person's day cap and USD 100)
+[USD 10]. Days reset at 00:00 JST.
 
 1. Call `get_account` to show the current caps.
 2. If the request is empty, show the current caps and stop.
