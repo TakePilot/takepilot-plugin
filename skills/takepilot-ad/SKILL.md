@@ -24,7 +24,7 @@ next stages need together with `get_playbook{sections: [...]}` (one call, one ap
 | `products` | anything about a 商材: the dossier (read it, never re-research), kinds, CVs, 動画の目的, files and documents, registering one |
 | `collect` | right after registering a 商材: 1-3 competitors (their own records), competitors' and its own ads and posts, trending videos, saved as 参考動画 and analysed by you |
 | `research` | planning any new video: how the 商材's genre makes videos on TikTok / YouTube (reuse the 商材's saved summary; else 5-10 videos with your own web search, then save it) |
-| `picked` | a request pasted from the web (プロンプト作成, 「エージェントで作る」) or 「選んだもので作って」: ids, combinations, goal, talking share |
+| `picked` | a request pasted from the web (プロンプト作成, 「エージェントで作る」) or 「選んだもので作って」: ids, combinations, goal, talking share, the resolution and the video model the person named (§7) |
 | `formats`, `scripts`, `pacing`, `visuals`, `typography` | the format, lines, hooks and voice, tempo, what each line shows (talking shots), text on screen |
 | `compose`, `editing` | filling a template's compose, motion and effects (on by default), cards (diagrams, charts, formulas, code, QR codes, animated emoji), transitions, sound, rendering on this PC, hand edits, saving |
 | `spend` | before the first paid call: estimates, `max_usd`, idempotency keys, engines, retakes |
