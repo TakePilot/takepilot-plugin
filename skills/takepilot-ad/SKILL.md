@@ -95,9 +95,11 @@ only on their OK (`avatar`), or on the web (`get_avatar_setup_link`). Human step
 
 - **Never write video HTML from scratch:** fill a template's compose and `build_video` (hand edits in HyperFrames
   Studio are the one exception: `editing` §7).
-- **Analyse reference and collected videos yourself** by default: the helper's `sheet` tiles and `transcribe_captions`
-  (after its estimate). Use `analyze_reference` (takepilot's Gemini) only when the person asks for it. Never send these
-  videos to any other service (`collect`, `references`).
+- **Summary first, then transcribe only the spans you use** for reference, collected and long videos: a public YouTube
+  URL goes straight to `summarize_video` (Gemini reads it from the URL, no download); other videos are downloaded,
+  imported and read with `analyze_reference`. Then download and `transcribe_captions` only the chosen spans, never a
+  whole video to find what is in it (after the estimates). The helper's `sheet` tiles are for seeing the pictures
+  yourself. Never send these videos to any other service (`references` §0, `sources`, `collect`).
 - **Never make a video for a competitor**, never use its photos as a reference, never make AI images of it (`collect`).
 - **Not an ad, not AI-looking, by default:** plan from the genre research, first person or captions (no outside
   narrator, no 「そこで」 reveal, no three-feature list, no big button), phone-camera pictures, real screens only
@@ -143,8 +145,9 @@ a second in 3x3 tiles, to analyse a reference or collected video yourself) | `pa
   repeated answer: ask again with a new key. Before `render`, say 「このPCで書き出します」.
 - Rendering here uses `node "${CLAUDE_SKILL_DIR}/scripts/hyperframes.mjs"` (takepilot's build of the HyperFrames CLI,
   never `npx hyperframes`); its `--takepilot-build` output is `get_video_bundle`'s `cli` (`editing` §6).
-- A pasted YouTube / TikTok / Instagram URL, or a video found while collecting (Facebook and the ad libraries' video
-  hosts too), is downloaded here with `bash "${CLAUDE_SKILL_DIR}/scripts/fetch-reference" "<url>"` (one URL, quoted;
+- A pasted public YouTube URL is summarised first by `summarize_video` (no download); then only the spans you use, and a
+  TikTok / Instagram URL or a video found while collecting (Facebook and the ad libraries' video hosts too), are downloaded
+  here with `bash "${CLAUDE_SKILL_DIR}/scripts/fetch-reference" "<url>"` (one URL, quoted;
   `references`, `collect`). Read web pages with `agent-browser` first, a full browser only when it fails; never log in
   or get around a CAPTCHA (`collect` §3).
 
