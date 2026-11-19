@@ -12,7 +12,7 @@
       "name": "takepilot",
       "source": "./",
       "description": "Make SNS posts and product / ad videos with takepilot's remote MCP tools.",
-      "version": "0.15.5"
+      "version": "0.16.1"
     }
   ]
 }

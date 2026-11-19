@@ -1,6 +1,6 @@
 ---
 name: takepilot-ad
-description: Use when the person wants to make a product video, ad video, UGC-style review, TikTok Shop / Reels / Shorts video, a video with a map, a video like a みんなの作品 post, or variations of one (different hooks, appeals, structures) with takepilot; also when they want to register or think up an SNSアカウント (their own YouTube / Instagram / TikTok / X / Threads accounts as one: its idea, image, profile text, trial videos) or make organic posts for it, add their SNS posts and collect the posts' views, likes and comments; to remove the BGM or a sound, or keep only a voice; when they ask to register a 商材 with takepilot (from its page URL or a description), to look up its competitors or collect 参考動画 (competitors' and trending ads and posts), or to fix, re-cut, re-render or save a takepilot video, or mention their takepilot products / 商材 (products, services, jobs, shops, apps, events) or avatars. Plans the video here and calls takepilot's remote MCP tools (the takepilot connector) for voice, images, clips, build and render.
+description: Use when the person wants to make a product video, ad video, UGC-style review, TikTok Shop / Reels / Shorts video, a video with a map, a video like a ギャラリー post, or variations of one (different hooks, appeals, structures) with takepilot; also when they want to register or think up an SNSアカウント (their own YouTube / Instagram / TikTok / X / Threads accounts as one: its idea, image, profile text, trial videos) or make organic posts for it, add their SNS posts and collect the posts' views, likes and comments; to remove the BGM or a sound, or keep only a voice; when they ask to register a 商材 with takepilot (from its page URL or a description), to look up its competitors or collect 参考動画 (competitors' and trending ads and posts), or to fix, re-cut, re-render or save a takepilot video, or mention their takepilot products / 商材 (products, services, jobs, shops, apps, events) or avatars. Plans the video here and calls takepilot's remote MCP tools (the takepilot connector) for voice, images, clips, build and render.
 ---
 
 # Make an ad video with takepilot
@@ -36,7 +36,8 @@ next stages need together with `get_playbook{sections: [...]}` (one call, one ap
 | `judge` | pass/fail checks on a draft, routing, picking among variations with Jev's probabilities (判定; paid, a few cents: include it in the plan's estimate) |
 | `models3d` | a 3D object that turns, opens up or is built part by part: stock / マイファイル 3D models first by default, even a close match (free), else one Tripo model per part (paid: estimate and ask first; it lands in マイファイル), the 3D scene, the draft rendered on this PC, and the paid cloud finish (`finish_3d`, Blender) once the person liked the draft; Blender on this PC only when they explicitly ask |
 | `swap` | putting an avatar or a person into a source video (character swap): a full-body image always, the clothes stay as in the source, splitting, the build check |
-| `maps` | anything with a map, a real Japanese town in 3D (check `check_plateau` before quoting; any real place in Japan: PLATEAU's shapes become the reference once takepilot's PLATEAU render tool is listed; until then never fetch PLATEAU data yourself), and "make one like this みんなの作品 post" |
+| `maps` | anything with a map, a real Japanese town in 3D (check `check_plateau` before quoting; any real place in Japan: PLATEAU's shapes become the reference once takepilot's PLATEAU render tool is listed; until then never fetch PLATEAU data yourself), and "make one like this ギャラリー post" |
+| `workflows` | a workflow URL or "make it with this workflow", finding workflows and gallery posts, and writing the person's own workflow for publishing (`get_workflow_draft`, `save_workflow_draft`) |
 
 ## How to talk: the person is a marketer, not an engineer
 
@@ -88,8 +89,10 @@ next stages need together with `get_playbook{sections: [...]}` (one call, one ap
 | 8 | Done | Write the ナレッジ's seven fields (`set_video_summary`: purpose, hook, scenario, reasons, rejected, tools_note, next; `compose`); what you made, the real spend, up to three improvements, the `page_url` last; offer variations once (`variations`) |
 
 A new avatar is made from the face, body and voice the person gave, showing each check and approving or confirming
-only on their OK (`avatar`), or on the web (`get_avatar_setup_link`). Human steps stay on the web: publishing to
-みんなの作品, raising caps. Give the person the link a tool answers; never try those steps yourself.
+only on their OK (`avatar`), or on the web (`get_avatar_setup_link`). A workflow shows its author's avatar and voice:
+never use another person's avatar, face or voice (not even downloaded as a file); make it with the person's own avatar,
+voice and 商材, and ask first when they have no avatar (`workflows`). Human steps stay on the web: publishing to
+ギャラリー, raising caps. Give the person the link a tool answers; never try those steps yourself.
 
 ## Rules that never bend
 
